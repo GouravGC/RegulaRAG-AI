@@ -12,25 +12,29 @@ ENV TESSERACT_CMD=/usr/bin/tesseract
 
 WORKDIR /app
 
-# System dependencies and OCR engine
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     tesseract-ocr \
     tesseract-ocr-eng \
     fonts-dejavu-core \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
 COPY requirements.txt .
 
 RUN python -m pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# Copy application
 COPY . .
 
-RUN chmod +x /app/start.sh
+# Normalize the startup script inside the Linux image.
+# Remove UTF-8 BOM and Windows line endings.
+RUN python -c "from pathlib import Path; p=Path('/app/start.sh'); b=p.read_bytes().removeprefix(bytes.fromhex('efbbbf')); p.write_bytes(b.replace(b'\r\n',b'\n').replace(b'\r',b'\n'))" \
+    && chmod 755 /app/start.sh \
+    && test "$(head -c 2 /app/start.sh)" = '#!' \
+    && bash -n /app/start.sh
 
 EXPOSE 8501
 
-CMD ["/app/start.sh"]
+# Run through Bash instead of executing the script directly.
+CMD ["/bin/bash", "/app/start.sh"]
