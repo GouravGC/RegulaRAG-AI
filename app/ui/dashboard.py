@@ -4,8 +4,15 @@ import uuid
 import requests
 import streamlit as st
 
-from app.ui.config import APP_NAME, API_BASE_URL, TOP_K
+# --------------------------------------------------
+# Backend configuration
+# --------------------------------------------------
 
+APP_NAME = "RegulaRAG AI"
+
+API_BASE_URL = "https://regularag-ai-latest.onrender.com"
+
+TOP_K = 5
 
 # --------------------------------------------------
 # Page configuration
