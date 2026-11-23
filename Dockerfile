@@ -27,14 +27,11 @@ RUN python -m pip install --upgrade pip \
 
 COPY . .
 
-# Normalize the startup script inside the Linux image.
-# Remove UTF-8 BOM and Windows line endings.
-RUN python -c "from pathlib import Path; p=Path('/app/start.sh'); b=p.read_bytes().removeprefix(bytes.fromhex('efbbbf')); p.write_bytes(b.replace(b'\r\n',b'\n').replace(b'\r',b'\n'))" \
+# Normalize start.sh, including UTF-16 and UTF-8 BOM encodings.
+RUN python -c "from pathlib import Path; p=Path('/app/start.sh'); b=p.read_bytes(); s=b.decode('utf-16') if b.startswith((b'\xff\xfe',b'\xfe\xff')) else b.decode('utf-8-sig'); s=s.replace('\r\n','\n').replace('\r','\n'); s=s if s.startswith('#!') else '#!/usr/bin/env bash\n'+s; p.write_text(s,encoding='utf-8',newline='\n')" \
     && chmod 755 /app/start.sh \
-    && test "$(head -c 2 /app/start.sh)" = '#!' \
     && bash -n /app/start.sh
 
 EXPOSE 8501
 
-# Run through Bash instead of executing the script directly.
 CMD ["/bin/bash", "/app/start.sh"]
