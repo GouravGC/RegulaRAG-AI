@@ -6,7 +6,6 @@ import logging
 import fitz
 import numpy as np
 from PIL import Image
-from rapidocr_onnxruntime import RapidOCR
 from rank_bm25 import BM25Okapi
 
 try:
@@ -23,16 +22,26 @@ logger = logging.getLogger(__name__)
 
 MIN_TEXT_LENGTH = 40
 OCR_MAX_DIMENSION = 2200
+OCR_RENDER_SCALE = 1.5
 
 _ocr_engine = None
 
 
 def get_ocr_engine():
-    """Initialize RapidOCR once and reuse it."""
+    """Initialize RapidOCR only when scanned-page OCR is required."""
     global _ocr_engine
 
     if _ocr_engine is None:
-        _ocr_engine = RapidOCR()
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _ocr_engine = RapidOCR()
+
+        except ImportError as exc:
+            raise RuntimeError(
+                "RapidOCR is not installed. "
+                "Install rapidocr-onnxruntime from requirements.txt."
+            ) from exc
 
     return _ocr_engine
 
@@ -41,7 +50,10 @@ def ocr_pdf_page(page) -> str:
     """Extract text from a scanned PDF page using RapidOCR."""
 
     pix = page.get_pixmap(
-        matrix=fitz.Matrix(1.5, 1.5),
+        matrix=fitz.Matrix(
+            OCR_RENDER_SCALE,
+            OCR_RENDER_SCALE,
+        ),
         colorspace=fitz.csRGB,
         alpha=False,
     )
@@ -79,7 +91,9 @@ def ocr_pdf_page(page) -> str:
 
 
 def extract_pages(filename: str, content: bytes) -> list[dict]:
+    """Extract selectable text and OCR scanned PDF pages."""
     suffix = Path(filename).suffix.lower()
+
     pages = []
     skipped_ocr_pages = []
 
@@ -101,10 +115,8 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
                     document,
                     start=1,
                 ):
-                    # First try extracting selectable PDF text.
                     text = page.get_text("text").strip()
 
-                    # Only use OCR when selectable text is insufficient.
                     if len(text) < MIN_TEXT_LENGTH:
                         try:
                             ocr_text = ocr_pdf_page(page)
@@ -176,6 +188,7 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
 
 
 def chunk_pages(filename: str, pages: list[dict]) -> list[dict]:
+    """Split extracted pages into overlapping text chunks."""
     chunks = []
 
     step = max(
@@ -205,7 +218,7 @@ def index_document(
     filename: str,
     content: bytes,
 ) -> dict:
-    # 1. Extract document content.
+    # 1. Extract PDF or text content.
     pages = extract_pages(filename, content)
 
     # 2. Create overlapping chunks.
