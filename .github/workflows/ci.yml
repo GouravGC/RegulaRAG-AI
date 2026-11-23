@@ -25,7 +25,7 @@ env:
 
 jobs:
   test-build-publish-deploy:
-    name: Test, Build, OCR and Deploy
+    name: Test, Build, RapidOCR and Deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -60,7 +60,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+
+      - name: Verify RapidOCR dependency
+        run: |
+          python -m pip show rapidocr-onnxruntime
+          python -c "from rapidocr_onnxruntime import RapidOCR; print('RapidOCR import OK')"
 
       - name: Run tests
         run: |
@@ -80,7 +85,7 @@ jobs:
             -t "$IMAGE_NAME:ci" \
             .
 
-      - name: Docker API and OCR smoke test
+      - name: Docker API and RapidOCR smoke test
         if: github.event_name == 'workflow_dispatch' || steps.changes.outputs.backend == 'true'
         run: |
           set -e
@@ -113,14 +118,17 @@ jobs:
             sleep 2
           done
 
-          echo "Checking Tesseract OCR..."
-          docker exec regularag-smoke tesseract --version
+          echo "Checking RapidOCR dependency inside Docker..."
 
-          echo "Checking Python OCR integration..."
           docker exec regularag-smoke \
-            python -c "import pytesseract; print('pytesseract OK')"
+            python -c "from rapidocr_onnxruntime import RapidOCR; print('RapidOCR import OK')"
 
-          echo "Docker API and OCR smoke tests passed."
+          echo "Initializing RapidOCR engine inside Docker..."
+
+          docker exec regularag-smoke \
+            python -c "from rapidocr_onnxruntime import RapidOCR; engine = RapidOCR(); print('RapidOCR initialized:', type(engine).__name__)"
+
+          echo "Docker API and RapidOCR smoke tests passed."
 
       - name: Log in to GHCR
         if: (github.event_name == 'workflow_dispatch' || steps.changes.outputs.backend == 'true') && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
