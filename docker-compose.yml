@@ -1,0 +1,23 @@
+
+services:
+  regularag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: regularag-ai:local
+    container_name: regularag-ai
+
+    ports:
+      - "8501:8501"
+
+    env_file:
+      - .env
+
+    environment:
+      PORT: "8501"
+      API_HOST: "127.0.0.1"
+      API_PORT: "8000"
+      API_BASE_URL: "http://127.0.0.1:8000"
+
+    restart: unless-stopped

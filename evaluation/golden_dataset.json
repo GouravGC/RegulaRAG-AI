@@ -1,0 +1,7 @@
+[
+  {
+    "question": "What is the stated scope of this document?",
+    "expected_source": "replace-with-your-uploaded-document",
+    "expected_answer_points": ["Add a verifiable requirement from the source"]
+  }
+]

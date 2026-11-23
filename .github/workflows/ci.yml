@@ -1,0 +1,118 @@
+
+name: RegulaRAG AI - CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/gouravgc/regularag-ai
+
+jobs:
+  test-and-build:
+    name: Test, Build and OCR Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        run: |
+          python -m pytest -v
+
+      - name: Build Docker image
+        run: |
+          docker build --pull -t "$IMAGE_NAME:ci" .
+
+      - name: Verify Tesseract and OCR inside Docker
+        run: |
+          docker run --rm "$IMAGE_NAME:ci" python -c '
+          from PIL import Image, ImageDraw, ImageFont
+          import pytesseract
+
+          version = pytesseract.get_tesseract_version()
+          print("Tesseract version:", version)
+
+          image = Image.new("RGB", (1600, 300), "white")
+          draw = ImageDraw.Draw(image)
+
+          font = ImageFont.truetype(
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+              64
+          )
+
+          draw.text(
+              (50, 100),
+              "REGULARAG OCR SMOKE TEST 12345",
+              fill="black",
+              font=font
+          )
+
+          extracted = pytesseract.image_to_string(
+              image,
+              config="--psm 6"
+          )
+
+          print("OCR output:", extracted)
+
+          assert "REGULARAG" in extracted.upper(), (
+              "OCR smoke test failed: expected text was not recognized."
+          )
+
+          print("OCR SMOKE TEST PASSED")
+          '
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag "$IMAGE_NAME:ci" "$IMAGE_NAME:latest"
+          docker tag "$IMAGE_NAME:ci" "$IMAGE_NAME:${GITHUB_SHA}"
+
+      - name: Push image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE_NAME:latest"
+          docker push "$IMAGE_NAME:${GITHUB_SHA}"
+
+      - name: Trigger Render deployment
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            curl --fail --silent --show-error \
+              -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo "Render deployment triggered."
+          else
+            echo "RENDER_DEPLOY_HOOK_URL not configured. Skipping deployment."
+          fi
