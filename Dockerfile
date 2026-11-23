@@ -1,22 +1,25 @@
-FROM --platform=linux/amd64 python:3.11-slim
+
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app \
-    TESSERACT_CMD=/usr/bin/tesseract
+    PYTHONPATH=/app
 
 WORKDIR /app
 
+# Native libraries required by RapidOCR, OpenCV and FAISS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
 RUN python -m pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && python -m pip install -r requirements.txt
 
 COPY app/config.py app/state.py ./app/
 COPY app/api/ ./app/api/
