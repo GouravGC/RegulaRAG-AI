@@ -50,7 +50,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      - name: Build backend Docker image
         run: |
           docker buildx build \
             --platform linux/amd64 \
@@ -59,28 +59,46 @@ jobs:
             -t "$IMAGE_NAME:ci" \
             .
 
-      - name: OCR and Docker smoke test
+      - name: Docker API and OCR smoke test
         run: |
-          docker run --rm \
-            --entrypoint /bin/bash \
-            "$IMAGE_NAME:ci" \
-            -lc '
-              set -e
-              echo "Checking startup script..."
-              test -f /app/start.sh
-              test -x /app/start.sh
-              test "$(head -c 2 /app/start.sh)" = "#!"
-              bash -n /app/start.sh
+          set -e
 
-              echo "Checking Tesseract OCR..."
-              command -v tesseract
-              tesseract --version
+          docker run -d \
+            --name regularag-smoke \
+            -p 127.0.0.1:8000:10000 \
+            "$IMAGE_NAME:ci"
 
-              echo "Checking Python OCR integration..."
-              python -c "import pytesseract; print(\"pytesseract OK\")"
+          cleanup() {
+            docker logs regularag-smoke || true
+            docker rm -f regularag-smoke || true
+          }
+          trap cleanup EXIT
 
-              echo "Docker and OCR smoke tests passed."
-            '
+          echo "Waiting for FastAPI..."
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              echo ""
+              echo "FastAPI health check passed."
+              break
+            fi
+
+            if [ "$attempt" -eq 30 ]; then
+              echo "FastAPI did not become healthy."
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "Checking Tesseract OCR..."
+          docker exec regularag-smoke tesseract --version
+
+          echo "Checking Python OCR integration..."
+          docker exec regularag-smoke \
+            python -c "import pytesseract; print('pytesseract OK')"
+
+          echo "Docker API and OCR smoke tests passed."
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

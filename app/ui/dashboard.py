@@ -4,7 +4,7 @@ import uuid
 import requests
 import streamlit as st
 
-from app.config import APP_NAME, API_BASE_URL, TOP_K
+from app.ui.config import APP_NAME, API_BASE_URL, TOP_K
 
 
 # --------------------------------------------------
