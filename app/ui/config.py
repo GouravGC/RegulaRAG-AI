@@ -5,23 +5,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+APP_NAME = "RegulaRAG AI"
 
-def get_setting(name: str, default: str) -> str:
-    try:
-        value = st.secrets.get(name)
-    except Exception:
-        value = None
-
-    if value is None or str(value).strip() == "":
-        value = os.getenv(name, default)
-
-    return str(value)
-
-
-APP_NAME = get_setting("APP_NAME", "RegulaRAG AI")
-API_BASE_URL = get_setting(
+# Render FastAPI backend
+API_BASE_URL = os.getenv(
     "API_BASE_URL",
-    "http://127.0.0.1:8000"
+    "https://regularag-ai-latest.onrender.com",
 ).rstrip("/")
 
-TOP_K = int(get_setting("TOP_K", "5"))
+TOP_K = int(os.getenv("TOP_K", "5"))
