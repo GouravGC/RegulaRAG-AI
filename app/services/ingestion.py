@@ -8,7 +8,6 @@ import fitz
 import numpy as np
 import pytesseract
 from PIL import Image
-from pypdf import PdfReader
 from rank_bm25 import BM25Okapi
 
 try:
@@ -21,8 +20,13 @@ from app.state import get_session
 from app.services.embeddings import embed_texts
 
 
+OCR_SCALE = 1.3
+OCR_TIMEOUT = 45
+MIN_TEXT_LENGTH = 40
+
+
 def configure_tesseract():
-    """Locate the Tesseract executable in the current environment."""
+    """Locate the Tesseract executable."""
     configured_path = os.getenv("TESSERACT_CMD", "").strip()
 
     if configured_path:
@@ -30,6 +34,7 @@ def configure_tesseract():
             raise RuntimeError(
                 f"TESSERACT_CMD points to a missing file: {configured_path}"
             )
+
         pytesseract.pytesseract.tesseract_cmd = configured_path
         return
 
@@ -40,20 +45,18 @@ def configure_tesseract():
         return
 
     raise RuntimeError(
-        "This PDF contains scanned pages that require OCR. "
-        "The OCR engine is packaged in the Docker image. "
-        "Run the Docker application to process scanned PDFs. "
-        "No local Windows OCR installation is required."
+        "Tesseract OCR is unavailable. "
+        "Run the application using the configured Docker image."
     )
 
 
 def ocr_pdf_page(page) -> str:
-    """Render a scanned PDF page and extract its text using Tesseract."""
+    """Run optimized OCR on a scanned PDF page."""
     configure_tesseract()
 
     pix = page.get_pixmap(
-        matrix=fitz.Matrix(2.0, 2.0),
-        colorspace=fitz.csRGB,
+        matrix=fitz.Matrix(OCR_SCALE, OCR_SCALE),
+        colorspace=fitz.csGRAY,
         alpha=False,
     )
 
@@ -65,13 +68,16 @@ def ocr_pdf_page(page) -> str:
         return pytesseract.image_to_string(
             image,
             lang="eng",
-            config="--psm 3",
-            timeout=120,
+            config="--oem 1 --psm 6",
+            timeout=OCR_TIMEOUT,
         ).strip()
+
     except RuntimeError as exc:
         raise RuntimeError(
-            f"OCR timed out or failed on PDF page {page.number + 1}: {exc}"
+            f"OCR timed out or failed on PDF page "
+            f"{page.number + 1}: {exc}"
         ) from exc
+
     finally:
         image.close()
 
@@ -98,10 +104,11 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
                     document,
                     start=1,
                 ):
+                    # Extract selectable PDF text first.
                     text = page.get_text("text").strip()
 
-                    # OCR pages with no meaningful selectable text.
-                    if len(text) < 40:
+                    # OCR only pages with insufficient text.
+                    if len(text) < MIN_TEXT_LENGTH:
                         ocr_text = ocr_pdf_page(page)
 
                         if len(ocr_text) > len(text):
@@ -118,6 +125,7 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
 
         except ValueError:
             raise
+
         except Exception as exc:
             raise RuntimeError(
                 f"PDF extraction/OCR failed: {str(exc)[:300]}"
@@ -228,7 +236,7 @@ def index_document(
     else:
         combined_vectors = vectors
 
-    # 5. Normalize vectors for cosine-similarity search.
+    # 5. Normalize vectors for cosine similarity.
     norms = np.linalg.norm(
         combined_vectors,
         axis=1,
@@ -242,7 +250,7 @@ def index_document(
 
     normalized = normalized.astype(np.float32)
 
-    # 6. Rebuild the FAISS index.
+    # 6. Build FAISS index.
     faiss_index = None
 
     if faiss is not None:
@@ -251,7 +259,7 @@ def index_document(
         )
         faiss_index.add(normalized)
 
-    # 7. Rebuild BM25 keyword index.
+    # 7. Build BM25 keyword index.
     tokenized = [
         chunk["text"].lower().split()
         for chunk in combined_chunks
@@ -259,7 +267,7 @@ def index_document(
 
     bm25_index = BM25Okapi(tokenized)
 
-    # 8. Update session state after successful indexing.
+    # 8. Update session only after successful indexing.
     session.chunks = combined_chunks
     session.vectors = normalized
     session.faiss_index = faiss_index
