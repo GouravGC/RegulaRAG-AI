@@ -3,6 +3,7 @@ from pathlib import Path
 import io
 import os
 import shutil
+import logging
 
 import fitz
 import numpy as np
@@ -20,13 +21,14 @@ from app.state import get_session
 from app.services.embeddings import embed_texts
 
 
-OCR_SCALE = 1.3
-OCR_TIMEOUT = 45
+logger = logging.getLogger(__name__)
+
+OCR_TIMEOUT = 25
+OCR_MAX_DIMENSION = 1800
 MIN_TEXT_LENGTH = 40
 
 
 def configure_tesseract():
-    """Locate the Tesseract executable."""
     configured_path = os.getenv("TESSERACT_CMD", "").strip()
 
     if configured_path:
@@ -51,11 +53,11 @@ def configure_tesseract():
 
 
 def ocr_pdf_page(page) -> str:
-    """Run optimized OCR on a scanned PDF page."""
+    """Run OCR on a resized grayscale PDF page."""
     configure_tesseract()
 
     pix = page.get_pixmap(
-        matrix=fitz.Matrix(OCR_SCALE, OCR_SCALE),
+        matrix=fitz.Matrix(1.0, 1.0),
         colorspace=fitz.csGRAY,
         alpha=False,
     )
@@ -65,18 +67,17 @@ def ocr_pdf_page(page) -> str:
     )
 
     try:
+        image.thumbnail(
+            (OCR_MAX_DIMENSION, OCR_MAX_DIMENSION),
+            Image.Resampling.LANCZOS,
+        )
+
         return pytesseract.image_to_string(
             image,
             lang="eng",
-            config="--oem 1 --psm 6",
+            config="--oem 1 --psm 11",
             timeout=OCR_TIMEOUT,
         ).strip()
-
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"OCR timed out or failed on PDF page "
-            f"{page.number + 1}: {exc}"
-        ) from exc
 
     finally:
         image.close()
@@ -85,6 +86,7 @@ def ocr_pdf_page(page) -> str:
 def extract_pages(filename: str, content: bytes) -> list[dict]:
     suffix = Path(filename).suffix.lower()
     pages = []
+    skipped_ocr_pages = []
 
     if suffix == ".pdf":
         try:
@@ -104,15 +106,23 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
                     document,
                     start=1,
                 ):
-                    # Extract selectable PDF text first.
                     text = page.get_text("text").strip()
 
-                    # OCR only pages with insufficient text.
                     if len(text) < MIN_TEXT_LENGTH:
-                        ocr_text = ocr_pdf_page(page)
+                        try:
+                            ocr_text = ocr_pdf_page(page)
 
-                        if len(ocr_text) > len(text):
-                            text = ocr_text
+                            if len(ocr_text) > len(text):
+                                text = ocr_text
+
+                        except Exception as exc:
+                            skipped_ocr_pages.append(page_number)
+
+                            logger.warning(
+                                "OCR skipped for PDF page %s: %s",
+                                page_number,
+                                str(exc)[:200],
+                            )
 
                     if text.strip():
                         pages.append({
@@ -128,7 +138,7 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
 
         except Exception as exc:
             raise RuntimeError(
-                f"PDF extraction/OCR failed: {str(exc)[:300]}"
+                f"PDF extraction failed: {str(exc)[:300]}"
             ) from exc
 
     elif suffix in {".txt", ".md", ".markdown"}:
@@ -154,8 +164,15 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
 
     if not pages:
         raise ValueError(
-            "No extractable text found, even after OCR. "
+            "No extractable text found. "
             "The PDF may be blank, unreadable, or image-only."
+        )
+
+    if skipped_ocr_pages:
+        logger.warning(
+            "Document %s indexed with OCR skipped on pages: %s",
+            filename,
+            skipped_ocr_pages,
         )
 
     return pages
@@ -191,10 +208,10 @@ def index_document(
     filename: str,
     content: bytes,
 ) -> dict:
-    # 1. Extract PDF or text content.
+    # 1. Extract document content.
     pages = extract_pages(filename, content)
 
-    # 2. Split content into overlapping chunks.
+    # 2. Create chunks.
     chunks = chunk_pages(filename, pages)
 
     if not chunks:
@@ -219,7 +236,7 @@ def index_document(
 
     session = get_session(session_id)
 
-    # 4. Combine with documents already indexed in this session.
+    # 4. Combine with existing session documents.
     combined_chunks = session.chunks + chunks
 
     if session.vectors is not None:
@@ -259,7 +276,7 @@ def index_document(
         )
         faiss_index.add(normalized)
 
-    # 7. Build BM25 keyword index.
+    # 7. Build BM25 index.
     tokenized = [
         chunk["text"].lower().split()
         for chunk in combined_chunks
@@ -267,7 +284,7 @@ def index_document(
 
     bm25_index = BM25Okapi(tokenized)
 
-    # 8. Update session only after successful indexing.
+    # 8. Update session after successful indexing.
     session.chunks = combined_chunks
     session.vectors = normalized
     session.faiss_index = faiss_index
