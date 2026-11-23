@@ -1,14 +1,12 @@
 
 from pathlib import Path
 import io
-import os
-import shutil
 import logging
 
 import fitz
 import numpy as np
-import pytesseract
 from PIL import Image
+from rapidocr_onnxruntime import RapidOCR
 from rank_bm25 import BM25Okapi
 
 try:
@@ -23,48 +21,34 @@ from app.services.embeddings import embed_texts
 
 logger = logging.getLogger(__name__)
 
-OCR_TIMEOUT = 25
-OCR_MAX_DIMENSION = 1800
 MIN_TEXT_LENGTH = 40
+OCR_MAX_DIMENSION = 2200
+
+_ocr_engine = None
 
 
-def configure_tesseract():
-    configured_path = os.getenv("TESSERACT_CMD", "").strip()
+def get_ocr_engine():
+    """Initialize RapidOCR once and reuse it."""
+    global _ocr_engine
 
-    if configured_path:
-        if not Path(configured_path).is_file():
-            raise RuntimeError(
-                f"TESSERACT_CMD points to a missing file: {configured_path}"
-            )
+    if _ocr_engine is None:
+        _ocr_engine = RapidOCR()
 
-        pytesseract.pytesseract.tesseract_cmd = configured_path
-        return
-
-    detected_path = shutil.which("tesseract")
-
-    if detected_path:
-        pytesseract.pytesseract.tesseract_cmd = detected_path
-        return
-
-    raise RuntimeError(
-        "Tesseract OCR is unavailable. "
-        "Run the application using the configured Docker image."
-    )
+    return _ocr_engine
 
 
 def ocr_pdf_page(page) -> str:
-    """Run OCR on a resized grayscale PDF page."""
-    configure_tesseract()
+    """Extract text from a scanned PDF page using RapidOCR."""
 
     pix = page.get_pixmap(
-        matrix=fitz.Matrix(1.0, 1.0),
-        colorspace=fitz.csGRAY,
+        matrix=fitz.Matrix(1.5, 1.5),
+        colorspace=fitz.csRGB,
         alpha=False,
     )
 
     image = Image.open(
         io.BytesIO(pix.tobytes("png"))
-    )
+    ).convert("RGB")
 
     try:
         image.thumbnail(
@@ -72,12 +56,23 @@ def ocr_pdf_page(page) -> str:
             Image.Resampling.LANCZOS,
         )
 
-        return pytesseract.image_to_string(
-            image,
-            lang="eng",
-            config="--oem 1 --psm 11",
-            timeout=OCR_TIMEOUT,
-        ).strip()
+        image_array = np.asarray(image)
+
+        result, _ = get_ocr_engine()(image_array)
+
+        if not result:
+            return ""
+
+        extracted_lines = []
+
+        for item in result:
+            if item and len(item) >= 2:
+                text = str(item[1]).strip()
+
+                if text:
+                    extracted_lines.append(text)
+
+        return "\n".join(extracted_lines).strip()
 
     finally:
         image.close()
@@ -106,8 +101,10 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
                     document,
                     start=1,
                 ):
+                    # First try extracting selectable PDF text.
                     text = page.get_text("text").strip()
 
+                    # Only use OCR when selectable text is insufficient.
                     if len(text) < MIN_TEXT_LENGTH:
                         try:
                             ocr_text = ocr_pdf_page(page)
@@ -119,7 +116,7 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
                             skipped_ocr_pages.append(page_number)
 
                             logger.warning(
-                                "OCR skipped for PDF page %s: %s",
+                                "RapidOCR skipped for PDF page %s: %s",
                                 page_number,
                                 str(exc)[:200],
                             )
@@ -165,12 +162,12 @@ def extract_pages(filename: str, content: bytes) -> list[dict]:
     if not pages:
         raise ValueError(
             "No extractable text found. "
-            "The PDF may be blank, unreadable, or image-only."
+            "The document may be blank or unreadable."
         )
 
     if skipped_ocr_pages:
         logger.warning(
-            "Document %s indexed with OCR skipped on pages: %s",
+            "Document %s has OCR-skipped pages: %s",
             filename,
             skipped_ocr_pages,
         )
@@ -211,7 +208,7 @@ def index_document(
     # 1. Extract document content.
     pages = extract_pages(filename, content)
 
-    # 2. Create chunks.
+    # 2. Create overlapping chunks.
     chunks = chunk_pages(filename, pages)
 
     if not chunks:
