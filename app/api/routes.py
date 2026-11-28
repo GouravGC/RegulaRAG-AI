@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.config import MAX_UPLOAD_MB, TOP_K
 from app.state import clear_session, get_session
-from app.services.ingestion import index_document
+from app.services.ingestion import index_document, index_website
 from app.services.retrieval import retrieve
 from app.services.generation import generate_answer
 
@@ -169,3 +169,36 @@ def delete_session(session_id: str):
         "message": "Session cleared.",
         "session_id": session_id,
     }
+
+
+from pydantic import BaseModel, Field, HttpUrl
+
+
+class WebsiteIngestionRequest(BaseModel):
+    session_id: str
+    url: HttpUrl
+    max_pages: int = Field(default=40, ge=1, le=40)
+
+
+@app.post("/websites")
+def upload_website(request: WebsiteIngestionRequest):
+    try:
+        result = index_website(
+            session_id=request.session_id,
+            url=str(request.url),
+            max_pages=request.max_pages,
+        )
+
+        return {
+            "status": "success",
+            "message": "Website indexed successfully.",
+            **result,
+        }
+
+    except Exception as exc:
+        logger.exception("Website indexing failed")
+
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc

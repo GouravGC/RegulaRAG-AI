@@ -4,6 +4,7 @@ import uuid
 import requests
 import streamlit as st
 
+
 # --------------------------------------------------
 # Backend configuration
 # --------------------------------------------------
@@ -13,6 +14,7 @@ APP_NAME = "RegulaRAG AI"
 API_BASE_URL = "https://regularag-ai-latest.onrender.com"
 
 TOP_K = 5
+
 
 # --------------------------------------------------
 # Page configuration
@@ -54,11 +56,14 @@ def api_request(method, endpoint, **kwargs):
             timeout=180,
             **kwargs,
         )
+
         response.raise_for_status()
         return response.json()
 
     except requests.exceptions.Timeout:
-        raise RuntimeError("The backend request timed out. Please try again.")
+        raise RuntimeError(
+            "The backend request timed out. Please try again."
+        )
 
     except requests.exceptions.ConnectionError:
         raise RuntimeError(
@@ -94,9 +99,19 @@ st.divider()
 # --------------------------------------------------
 
 with st.sidebar:
+
     st.title("Knowledge Base")
 
-    st.caption("Upload regulatory documents to build your private session index.")
+    st.caption(
+        "Upload regulatory documents or crawl websites "
+        "to build your private session index."
+    )
+
+    # --------------------------------------------------
+    # PDF / TXT / Markdown document ingestion
+    # --------------------------------------------------
+
+    st.subheader("📄 Document Loader")
 
     uploaded_file = st.file_uploader(
         "Upload a document",
@@ -110,7 +125,9 @@ with st.sidebar:
         use_container_width=True,
     ):
         try:
-            with st.spinner("Extracting, chunking and embedding document..."):
+            with st.spinner(
+                "Extracting, chunking and embedding document..."
+            ):
                 result = api_request(
                     "POST",
                     "/documents",
@@ -139,12 +156,74 @@ with st.sidebar:
 
     st.divider()
 
+    # --------------------------------------------------
+    # Website URL ingestion
+    # --------------------------------------------------
+
+    st.subheader("🌐 Website Knowledge Loader")
+
+    website_url = st.text_input(
+        "Website URL",
+        placeholder="https://www.rbi.org.in/",
+        help=(
+            "Enter the starting URL of a regulatory website. "
+            "Only accessible, permitted pages will be crawled."
+        ),
+        key="website_url",
+    )
+
+    max_pages = st.slider(
+        "Maximum pages to crawl",
+        min_value=1,
+        max_value=40,
+        value=40,
+        key="website_max_pages",
+    )
+
+    if st.button(
+        "🌐 Index Website",
+        disabled=not website_url.strip(),
+        use_container_width=True,
+    ):
+        try:
+            with st.spinner(
+                "Crawling website, extracting content and building index..."
+            ):
+                result = api_request(
+                    "POST",
+                    "/websites",
+                    json={
+                        "session_id": st.session_state.session_id,
+                        "url": website_url.strip(),
+                        "max_pages": max_pages,
+                    },
+                )
+
+            st.session_state.documents.append(result)
+
+            st.success(
+                f"Website indexed successfully! "
+                f"{result['pages_crawled']} pages crawled and "
+                f"{result['chunks_added']} chunks added."
+            )
+
+            st.json(result)
+
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.divider()
+
+    # --------------------------------------------------
+    # Session management
+    # --------------------------------------------------
+
     st.subheader("Session")
 
     st.code(st.session_state.session_id[:8])
 
     st.metric(
-        "Indexed documents",
+        "Indexed sources",
         len(st.session_state.documents),
     )
 
@@ -191,7 +270,8 @@ tab_chat, tab_lab, tab_eval = st.tabs(
 # --------------------------------------------------
 
 with tab_chat:
-    st.subheader("Ask your regulatory documents")
+
+    st.subheader("Ask your regulatory knowledge base")
 
     st.write(
         "Ask questions about uploaded policies, regulatory frameworks, "
@@ -199,27 +279,46 @@ with tab_chat:
     )
 
     for message in st.session_state.messages:
+
         with st.chat_message(message["role"]):
+
             st.markdown(message["content"])
 
             if message.get("sources"):
+
                 with st.expander("View retrieved evidence"):
+
                     for index, source in enumerate(
                         message["sources"],
                         start=1,
                     ):
-                        st.markdown(
-                            f"**[S{index}] {source['source']} "
-                            f"— Page {source['page']}**"
-                        )
 
-                        st.caption(source["text"][:1200])
+                        source_name = source.get("source", "Unknown source")
+                        page_number = source.get("page")
+
+                        if page_number is not None:
+                            st.markdown(
+                                f"**[S{index}] {source_name} "
+                                f"— Page {page_number}**"
+                            )
+                        else:
+                            st.markdown(
+                                f"**[S{index}] {source_name}**"
+                            )
+
+                        if source.get("source_url"):
+                            st.markdown(
+                                f"[Open source website]({source['source_url']})"
+                            )
+
+                        st.caption(source.get("text", "")[:1200])
 
     prompt = st.chat_input(
         "Ask a question about your uploaded regulations..."
     )
 
     if prompt:
+
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -231,9 +330,11 @@ with tab_chat:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
+
             with st.spinner(
                 "Retrieving evidence and generating a grounded answer..."
             ):
+
                 try:
                     payload = api_request(
                         "POST",
@@ -251,17 +352,40 @@ with tab_chat:
                     st.markdown(answer)
 
                     if sources:
+
                         with st.expander("View retrieved evidence"):
+
                             for index, source in enumerate(
                                 sources,
                                 start=1,
                             ):
-                                st.markdown(
-                                    f"**[S{index}] {source['source']} "
-                                    f"— Page {source['page']}**"
+
+                                source_name = source.get(
+                                    "source",
+                                    "Unknown source",
                                 )
 
-                                st.caption(source["text"][:1200])
+                                page_number = source.get("page")
+
+                                if page_number is not None:
+                                    st.markdown(
+                                        f"**[S{index}] {source_name} "
+                                        f"— Page {page_number}**"
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"**[S{index}] {source_name}**"
+                                    )
+
+                                if source.get("source_url"):
+                                    st.markdown(
+                                        f"[Open source website]"
+                                        f"({source['source_url']})"
+                                    )
+
+                                st.caption(
+                                    source.get("text", "")[:1200]
+                                )
 
                     st.session_state.messages.append(
                         {
@@ -280,6 +404,7 @@ with tab_chat:
 # --------------------------------------------------
 
 with tab_lab:
+
     st.subheader("Hybrid Retrieval Laboratory")
 
     st.markdown(
@@ -317,6 +442,7 @@ with tab_lab:
 # --------------------------------------------------
 
 with tab_eval:
+
     st.subheader("Evaluation Dashboard")
 
     st.write(
@@ -338,7 +464,7 @@ with tab_eval:
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Indexed documents",
+        "Indexed sources",
         len(st.session_state.documents),
     )
 
